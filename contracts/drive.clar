@@ -1,3 +1,6 @@
+;; Stacks-Drive Smart Contract
+;; A decentralized file storage system with Bitcoin incentives.
+
 (define-constant contract-owner tx-sender)
 (define-constant storage-fee u10)  
 (define-constant max-file-size u1048576)  
