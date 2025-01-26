@@ -1,71 +1,158 @@
-;; Stacks-Drive Smart Contract
-;; A decentralized file storage system with Bitcoin incentives.
+(define-constant contract-owner tx-sender)
+(define-constant storage-fee u10)  
+(define-constant max-file-size u1048576)  
 
-(define-constant CONTRACT_OWNER tx-sender) ;; Contract owner
-(define-constant STORAGE_PRICE_PER_GB u100) ;; Price per GB in micro-STX
+;; Storage provider struct
+(define-map storage-providers 
+  { provider: principal }
+  {
+    total-space: uint,
+    used-space: uint,
+    reputation-score: uint,
+    active: bool
+  }
+)
 
-;; Data structures
-(define-data-var providers (list principal) (list tx-sender)) ;; Initialize with contract owner
-(define-map files { file-hash: string } { owner: principal, size: uint }) ;; File storage map
+;; File metadata struct
+(define-map file-metadata 
+  { file-hash: (buff 32) }
+  {
+    uploader: principal,
+    provider: principal,
+    file-size: uint,
+    upload-time: uint,
+    is-available: bool
+  }
+)
 
-;; Errors
-(define-constant ERR_NOT_OWNER (err u100))
-(define-constant ERR_INSUFFICIENT_PAYMENT (err u101))
-(define-constant ERR_FILE_NOT_FOUND (err u102))
-(define-constant ERR_NOT_PROVIDER (err u103))
+;; Rewards tracking
+(define-map provider-rewards 
+  { provider: principal }
+  { total-rewards: uint }
+)
 
 ;; Register as a storage provider
-(define-public (register-provider)
+(define-public (register-provider (total-space uint))
   (begin
-    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_OWNER)
-    (var-set providers (append (var-get providers) (list tx-sender)))
+    (asserts! (> total-space u0) (err u1))
+    (map-set storage-providers 
+      { provider: tx-sender }
+      {
+        total-space: total-space,
+        used-space: u0,
+        reputation-score: u100,
+        active: true
+      }
+    )
     (ok true)
   )
 )
 
-;; Upload a file
-(define-public (upload-file (file-hash string) (size uint))
-  (let ((payment (* size STORAGE_PRICE_PER_GB)))
-    (asserts! (>= (stx-get-balance tx-sender) payment) ERR_INSUFFICIENT_PAYMENT)
-    (stx-transfer? payment tx-sender CONTRACT_OWNER)
-    (map-set files { file-hash: file-hash } { owner: tx-sender, size: size })
+;; Upload file metadata
+(define-public (upload-file 
+  (file-hash (buff 32)) 
+  (file-size uint)
+  (provider principal)
+)
+  (let 
+    (
+      (provider-info 
+        (unwrap! 
+          (map-get? storage-providers { provider: provider }) 
+          (err u2)
+        )
+      )
+      (storage-cost (* file-size storage-fee))
+    )
+    (asserts! (< file-size max-file-size) (err u3))
+    (asserts! (>= (get total-space provider-info) 
+                  (+ (get used-space provider-info) file-size)) 
+      (err u4)
+    )
+    
+    ;; Update provider storage usage
+    (map-set storage-providers 
+      { provider: provider }
+      (merge provider-info 
+        { used-space: (+ (get used-space provider-info) file-size) }
+      )
+    )
+    
+    ;; Store file metadata
+    (map-set file-metadata 
+      { file-hash: file-hash }
+      {
+        uploader: tx-sender,
+        provider: provider,
+        file-size: file-size,
+        upload-time: block-height,
+        is-available: true
+      }
+    )
+    
     (ok true)
   )
 )
 
-;; Get file details
-(define-read-only (get-file (file-hash string))
-  (default-to { owner: tx-sender, size: u0 } (map-get? files { file-hash: file-hash }))
+;; Retrieve file metadata
+(define-read-only (get-file-metadata (file-hash (buff 32)))
+  (map-get? file-metadata { file-hash: file-hash })
 )
 
-;; Delete a file (only owner can delete)
-(define-public (delete-file (file-hash string))
-  (let ((file-details (unwrap! (map-get? files { file-hash: file-hash }) ERR_FILE_NOT_FOUND)))
-    (asserts! (is-eq (get owner file-details) tx-sender) ERR_NOT_OWNER)
-    (map-delete files { file-hash: file-hash })
-    (ok true)
+;; Claim storage provider rewards
+(define-public (claim-rewards)
+  (let 
+    (
+      (provider-info 
+        (unwrap! 
+          (map-get? storage-providers { provider: tx-sender }) 
+          (err u5)
+        )
+      )
+      (current-rewards 
+        (default-to u0 
+          (get total-rewards 
+            (unwrap-panic 
+              (map-get? provider-rewards { provider: tx-sender })
+            )
+          )
+        )
+      )
+      (reward-amount 
+        (* (get used-space provider-info) storage-fee)
+      )
+    )
+    (asserts! (get active provider-info) (err u6))
+    
+    ;; Update rewards
+    (map-set provider-rewards 
+      { provider: tx-sender }
+      { total-rewards: (+ current-rewards reward-amount) }
+    )
+    
+    ;; Transfer rewards (placeholder - actual transfer mechanism would depend on STX/BTC integration)
+    (stx-transfer? reward-amount tx-sender contract-owner)
   )
 )
 
-;; Check if a user is a storage provider
-(define-read-only (is-provider (user principal))
-  (contains? (var-get providers) user)
-)
-
-;; Add a provider (only contract owner can add)
-(define-public (add-provider (user principal))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_OWNER)
-    (var-set providers (append (var-get providers) (list user)))
-    (ok true)
-  )
-)
-
-;; Remove a provider (only contract owner can remove)
-(define-public (remove-provider (user principal))
-  (begin
-    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_OWNER)
-    (var-set providers (filter (var-get providers) (not (is-eq user))))
+;; Deactivate storage provider
+(define-public (deactivate-provider)
+  (let 
+    (
+      (provider-info 
+        (unwrap! 
+          (map-get? storage-providers { provider: tx-sender }) 
+          (err u7)
+        )
+      )
+    )
+    (asserts! (is-eq (get used-space provider-info) u0) (err u8))
+    
+    (map-set storage-providers 
+      { provider: tx-sender }
+      (merge provider-info { active: false })
+    )
+    
     (ok true)
   )
 )
