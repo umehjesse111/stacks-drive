@@ -2,6 +2,7 @@
 (define-constant storage-fee u10)  
 (define-constant max-file-size u1048576)  
 
+
 ;; Validation functions
 (define-private (is-valid-provider (provider principal))
   (is-some (map-get? storage-providers { provider: provider }))
@@ -169,5 +170,51 @@
     )
     
     (ok true)
+  )
+)
+
+;;Delete File Metadata
+;; Enhanced Delete File Metadata Function
+(define-public (delete-file (file-hash (buff 32)))
+  (begin
+    ;; Validate file hash input
+    (asserts! (is-valid-file-hash file-hash) (err u14))
+    
+    (let 
+      (
+        (file-info 
+          (unwrap! 
+            (map-get? file-metadata { file-hash: file-hash }) 
+            (err u11)
+          )
+        )
+      )
+      ;; Ensure only the uploader can delete the file
+      (asserts! (is-eq tx-sender (get uploader file-info)) (err u12))
+      
+      ;; Reduce used space for the provider
+      (let 
+        (
+          (provider-info 
+            (unwrap! 
+              (map-get? storage-providers { provider: (get provider file-info) }) 
+              (err u13)
+            )
+          )
+        )
+        ;; Update provider's used space
+        (map-set storage-providers 
+          { provider: (get provider file-info) }
+          (merge provider-info 
+            { used-space: (- (get used-space provider-info) (get file-size file-info)) }
+          )
+        )
+      )
+      
+      ;; Remove file metadata
+      (map-delete file-metadata { file-hash: file-hash })
+      
+      (ok true)
+    )
   )
 )
