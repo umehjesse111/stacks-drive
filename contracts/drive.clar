@@ -2,6 +2,18 @@
 (define-constant storage-fee u10)  
 (define-constant max-file-size u1048576)  
 
+;; Validation functions
+(define-private (is-valid-provider (provider principal))
+  (is-some (map-get? storage-providers { provider: provider }))
+)
+
+(define-private (is-valid-file-hash (file-hash (buff 32)))
+  (and 
+    (> (len file-hash) u0)
+    (< (len file-hash) u33)
+  )
+)
+
 ;; Storage provider struct
 (define-map storage-providers 
   { provider: principal }
@@ -54,43 +66,49 @@
   (file-size uint)
   (provider principal)
 )
-  (let 
-    (
-      (provider-info 
-        (unwrap! 
-          (map-get? storage-providers { provider: provider }) 
-          (err u2)
+  (begin
+    ;; Validate inputs
+    (asserts! (is-valid-file-hash file-hash) (err u9))
+    (asserts! (is-valid-provider provider) (err u10))
+    
+    (let 
+      (
+        (provider-info 
+          (unwrap! 
+            (map-get? storage-providers { provider: provider }) 
+            (err u2)
+          )
+        )
+        (storage-cost (* file-size storage-fee))
+      )
+      (asserts! (< file-size max-file-size) (err u3))
+      (asserts! (>= (get total-space provider-info) 
+                    (+ (get used-space provider-info) file-size)) 
+        (err u4)
+      )
+      
+      ;; Update provider storage usage
+      (map-set storage-providers 
+        { provider: provider }
+        (merge provider-info 
+          { used-space: (+ (get used-space provider-info) file-size) }
         )
       )
-      (storage-cost (* file-size storage-fee))
-    )
-    (asserts! (< file-size max-file-size) (err u3))
-    (asserts! (>= (get total-space provider-info) 
-                  (+ (get used-space provider-info) file-size)) 
-      (err u4)
-    )
-    
-    ;; Update provider storage usage
-    (map-set storage-providers 
-      { provider: provider }
-      (merge provider-info 
-        { used-space: (+ (get used-space provider-info) file-size) }
+      
+      ;; Store file metadata
+      (map-set file-metadata 
+        { file-hash: file-hash }
+        {
+          uploader: tx-sender,
+          provider: provider,
+          file-size: file-size,
+          upload-time: block-height,
+          is-available: true
+        }
       )
+      
+      (ok true)
     )
-    
-    ;; Store file metadata
-    (map-set file-metadata 
-      { file-hash: file-hash }
-      {
-        uploader: tx-sender,
-        provider: provider,
-        file-size: file-size,
-        upload-time: block-height,
-        is-available: true
-      }
-    )
-    
-    (ok true)
   )
 )
 
@@ -110,12 +128,9 @@
         )
       )
       (current-rewards 
-        (default-to u0 
-          (get total-rewards 
-            (unwrap-panic 
-              (map-get? provider-rewards { provider: tx-sender })
-            )
-          )
+        (match (map-get? provider-rewards { provider: tx-sender })
+          rewards (get total-rewards rewards)
+          u0
         )
       )
       (reward-amount 
