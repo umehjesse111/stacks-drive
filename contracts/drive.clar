@@ -173,7 +173,6 @@
   )
 )
 
-;;Delete File Metadata
 ;; Enhanced Delete File Metadata Function
 (define-public (delete-file (file-hash (buff 32)))
   (begin
